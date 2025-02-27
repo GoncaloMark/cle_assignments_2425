@@ -1,7 +1,6 @@
 #!/bin/bash
 
-#numbers=(1000000 10000000 100000000 1000000000)
-numbers=(100)
+numbers=(1000000 10000000 100000000 1000000000)
 
 executable="./build/samples/cle-samples"
 

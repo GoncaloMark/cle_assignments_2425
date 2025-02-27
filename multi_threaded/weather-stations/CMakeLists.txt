@@ -5,5 +5,8 @@ add_executable(cle-ws-mt
     src/main.cpp
     # Add your files here if needed.
 )
+
+target_link_libraries(cle-ws-mt PRIVATE multithreaded)
+
 target_compile_features(cle-ws-mt PRIVATE cxx_std_20)
 target_compile_options(cle-ws-mt PRIVATE -Wall -Wextra)

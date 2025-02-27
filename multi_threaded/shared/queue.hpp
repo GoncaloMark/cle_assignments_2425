@@ -1,4 +1,6 @@
 #pragma once 
+#include <stdexcept>
+
 
 template <typename T>
 class Queue{
@@ -14,9 +16,9 @@ class Queue{
 
         inline bool isEmpty() const {
             return first == nullptr;
-        }
+        };
 
-        void enQueue(const T element);
+        void enQueue(T&& element);
         T deQueue();
         void clear();
 
@@ -26,30 +28,34 @@ class Queue{
 };
 
 template <typename T>
-void Queue<T>::enQueue(const T element){
-    if(isEmpty()){
-        first = new Node(element);
+void Queue<T>::enQueue(T&& element) {  
+    if (isEmpty()) {
+        first = new Node(std::move(element));  
         last = first;
     } else {
-        Node *p = new Node(element);
+        Node* p = new Node(std::move(element));  
         last->next = p;
         last = last->next;
     }
 }
 
 template <typename T>
-T Queue<T>::deQueue(){
-    T element;
-    Node *p;
-    if(!isEmpty()){
-        element = first->element;
-
-        p = first;
-        first = first->next;
-
-        delete p;
+T Queue<T>::deQueue() {
+    if (isEmpty()) {
+        throw std::runtime_error("Queue is empty!"); 
     }
-    return element;
+
+    Node *p = first;
+    T element = std::move(p->element);  
+
+    first = first->next;
+    delete p;
+
+    if (first == nullptr) {
+        last = nullptr;  
+    }
+
+    return element; 
 }
 
 template <typename T>

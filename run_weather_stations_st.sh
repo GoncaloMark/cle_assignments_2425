@@ -1,7 +1,6 @@
 #!/bin/bash
 
-#files=("samples-1000000.txt" "samples-10000000.txt" "samples-100000000.txt" "samples-1000000000.txt")
-files=("samples-100.txt")
+files=("samples-1000000.txt" "samples-10000000.txt" "samples-100000000.txt" "samples-1000000000.txt")
 
 executable="./build/single_threaded/weather-stations/cle-ws"
 

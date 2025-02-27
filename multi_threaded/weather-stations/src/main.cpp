@@ -1,151 +1,119 @@
-#include <iostream>
 #include <iomanip>
 #include <fstream>
 #include <map>
 #include <chrono>
-#include <getopt.h>
-#include <cstring>
-#include <thread>
-#include <vector>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <string.h>
 
+#include "threading.hpp"
 #include "../include/datastructures.hpp"
 
-void print_usage()
-{
-    std::cout << "Use: ./cle-ws -f <file> -f <file2> -t <threads>\n"
-              << "  -f <file>: Specifies the input file (required and can be used multiple times)\n"
-              << "  -t <threads>: Number of threads (optional)\n";
-}
+constexpr size_t CHUNK_SIZE = 2 * (1024 * 1024); // 8MB chunk size
 
-int main(int argc, char *argv[])
-{
-    std::vector<std::string> files;
-    // int num_threads = 1; // Base: 1 Thread
-    int num_threads = std::thread::hardware_concurrency();
+thread_local std::map<std::string, data_t> local_store;
 
-    if (argc < 2)
-    {
-        std::cerr << "Error: Missing arguments.\n";
-        print_usage();
-        return 1;
-    }
+void process_chunk(const char* start, const char* end) {
+    const char* ptr = start;
+    while (ptr < end) {
+        const char* line_end = static_cast<const char*>(memchr(ptr, '\n', end - ptr));
+        if (!line_end) break;
 
-    for (int i = 1; i < argc; i++)
-    {
-        if (strcmp(argv[i], "-f") == 0 && i + 1 < argc)
-        {
-            files.push_back(argv[i + 1]);
-            i++;
-        }
-        else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc)
-        {
-            num_threads = std::stoi(argv[i + 1]);
-            i++;
-        }
-    }
+        const char* semicolon = static_cast<const char*>(memchr(ptr, ';', line_end - ptr));
+        if (!semicolon) {
+            std::cerr << "Skipping malformed line (missing ';'): " << std::string(ptr, line_end - ptr) << '\n';
+        } else {
+            try {
+                std::string key(ptr, semicolon - ptr);
+                float value = std::stof(std::string(semicolon + 1, line_end - (semicolon + 1)));
 
-    if (files.empty())
-    {
-        files.push_back("measurements.txt");
-    }
-
-    std::vector<std::string> valid_files;
-    for (const auto &file : files)
-    {
-        std::ifstream fh(file);
-        if (!fh.is_open())
-        {
-            std::cerr << "Unable to open '" << file << "', skipping..." << '\n';
-        }
-        else
-        {
-            valid_files.push_back(file);
-            fh.close();
-        }
-    }
-
-    if (valid_files.empty())
-    {
-        std::cerr << "No valid input files. Exiting program.\n";
-        return 1;
-    }
-
-    for (const auto &f : valid_files)
-    {
-        std::cout << "  - " << f << std::endl;
-    }
-
-    std::cout << "Using " << num_threads << " threads to process files:\n ";
-
-
-    /*
-    const char* file = "measurements.txt";
-    if (argc > 1){
-        file = argv[1];
-    }
-    std::ifstream fh(file);
-    if (not fh.is_open()){
-        std::cerr << "Unable to open '" << file << "'" << '\n';
-        std::cerr << "Please ensure the file exists and you have permission to read it." << '\n';
-        return 1;
-    }*/
-
-    auto start_time = std::chrono::high_resolution_clock::now();
-
-    // std::string line;
-    std::map<std::string, data_t> store;
-
-    for (const auto &file : valid_files)
-    {
-        std::ifstream fh(file);
-        std::string line;
-        while (getline(fh, line))
-        {
-            size_t idx = line.find(';');
-            if (idx == std::string::npos)
-            {
-                std::cerr << "Skipping malformed line (missing ';'): " << line << '\n';
-                continue;
-            }
-
-            char *str = line.data();
-            str[idx] = '\0';
-
-            try
-            {
-                auto &data = store[str];
-                str = str + idx + 1;
-                float value = std::stof(str);
-
+                auto& data = local_store[key];
                 data.sum += value;
                 data.count += 1;
+                data.max = std::max(data.max, value);
+                data.min = std::min(data.min, value);
 
-                if (value > data.max)
-                {
-                    data.max = value;
-                }
-
-                if (value < data.min)
-                {
-                    data.min = value;
-                }
-            }
-            catch (const std::invalid_argument &e)
-            {
-                std::cerr << "Invalid value (couldn't conver to float), skipping line: " << line << '\n';
-            }
-            catch (const std::out_of_range &e)
-            {
-                std::cerr << "Value out of range (couldn't conver to float), skipping line: " << line << '\n';
+            } catch (const std::exception& e) {
+                std::cerr << "Skipping invalid line: " << std::string(ptr, line_end - ptr) << '\n';
             }
         }
+        ptr = line_end + 1;  // go next line
+    }
+}
 
-        // Always close the file when done
-        fh.close();
+int main(int argc, char* argv[]) {
+    const char* file = "measurements.txt";
+    if (argc > 1) {
+        file = argv[1];
     }
 
-    for (const auto &entry : store)
-    {
+    auto start_time = std::chrono::high_resolution_clock::now();
+    ThreadPool t_pool(4);  
+
+    int fd = open(file, O_RDONLY);
+    if (fd == -1) {
+        std::cerr << "Cannot open file: " << file << std::endl;
+        return -1;
+    }
+
+    struct stat sb;
+    if (fstat(fd, &sb) == -1) {
+        std::cerr << "Cannot get file size" << std::endl;
+        close(fd);
+        return -1;
+    }
+
+    char* data = static_cast<char*>(mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0));
+    if (data == MAP_FAILED) {
+        std::cerr << "Memory mapping failed" << std::endl;
+        close(fd);
+        return -1;
+    }
+
+    madvise(data, sb.st_size, MADV_SEQUENTIAL);
+
+    std::vector<std::map<std::string, data_t>> thread_stores;
+    std::mutex mergeTex; 
+
+    size_t offset = 0;
+    while (offset < (size_t)sb.st_size) {
+        size_t chunk_end = std::min(offset + CHUNK_SIZE, (size_t)sb.st_size);
+        
+        while (chunk_end < (size_t)sb.st_size && data[chunk_end] != '\n') {
+            chunk_end++;
+        }
+
+        madvise(data + offset, chunk_end - offset, MADV_WILLNEED);
+
+        t_pool.addTask([=, &thread_stores, &mergeTex] {
+            local_store.clear();
+            process_chunk(data + offset, data + chunk_end);
+            madvise(data + offset, chunk_end - offset, MADV_DONTNEED);
+
+            std::lock_guard<std::mutex> lock(mergeTex);
+            thread_stores.push_back(std::move(local_store));
+        });
+
+        offset = chunk_end + 1;
+    }
+
+    t_pool.stop();  
+
+    std::map<std::string, data_t> store;
+    for (const auto& local_map : thread_stores) {
+        for (const auto& [key, data] : local_map) {
+            auto& global_data = store[key];
+
+            global_data.sum += data.sum;
+            global_data.count += data.count;
+            global_data.max = std::max(global_data.max, data.max);
+            global_data.min = std::min(global_data.min, data.min);
+        }
+    }
+
+    for (const auto& entry : store) {
         std::cout << std::fixed << std::setprecision(1) << entry.first << ": avg=" << entry.second.sum / entry.second.count << " min=" << entry.second.min << " max=" << entry.second.max << '\n';
     }
 
@@ -153,8 +121,8 @@ int main(int argc, char *argv[])
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "Execution time: " << duration.count() << " milliseconds" << std::endl;
 
-    // Always close the file when done
-    // fh.close();
+    munmap(data, sb.st_size);
+    close(fd);
 
     return 0;
 }
