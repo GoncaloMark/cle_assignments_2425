@@ -21,6 +21,8 @@ class ThreadPool{
         void stop();
 
     private:
+
+        void workerThread();
         // sinal para distinguir entre esperar pelo trabalho ou parar.
         bool exit;
     
