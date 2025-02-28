@@ -7,11 +7,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <string.h>
+#include <getopt.h> 
 
 #include "threading.hpp"
 #include "../include/datastructures.hpp"
 
-constexpr size_t CHUNK_SIZE = 2 * (1024 * 1024); // 8MB chunk size
+//constexpr size_t CHUNK_SIZE = 2 * (1024 * 1024); // 8MB chunk size
+size_t CHUNK_SIZE = -1;
+int num_threads = -1;
+const char* file = "measurements.txt";
 
 thread_local std::map<std::string, data_t> local_store;
 
@@ -43,14 +47,62 @@ void process_chunk(const char* start, const char* end) {
     }
 }
 
+static option long_options[] = {
+    {"file", required_argument, 0, 'f'},
+    {"chunk_size", required_argument, 0, 'z'},
+    {"threads", required_argument, 0, 't'},
+    {0,         0,           0,  0 }
+};
+
+void print_usage() {
+    std::cerr << "Usage: ./word-count -f <file> -z <chunk_size> -t <threads>\n"
+              << "  -f, --file <file>         Input file (required)\n"
+              << "  -z, --chunk_size <size>  Chunk size in MB (required)\n"
+              << "  -t, --threads <num>       Number of threads (required)\n";
+}
+
 int main(int argc, char* argv[]) {
-    const char* file = "measurements.txt";
-    if (argc > 1) {
-        file = argv[1];
+    int opt;
+    while (1){
+        int option_index = 0;
+
+        opt = getopt_long(argc, argv, "f:z:t:", long_options, &option_index);
+        if (opt == -1)
+            break;
+
+        switch (opt)
+        {
+        case 'f':
+            file = optarg;
+            break;
+        case 'z':
+            CHUNK_SIZE = std::atoi(optarg);
+            break;
+        case 't':
+            num_threads = std::atoi(optarg);
+            break;
+        case '?':
+            print_usage();
+            return 1;
+        default:
+            break;
+        }
+    }
+    
+
+    if (CHUNK_SIZE <= 0 || num_threads <= 0){
+        std::cerr << "Error: Missing required arguments!\n";
+        print_usage();
+        return 1;
     }
 
+    size_t chunk_size_mb = CHUNK_SIZE * (1024 * 1024);
+    std::cout << "Chunk size: " << chunk_size_mb << "\n";
+    std::cout << "Number of Threads: " << num_threads << "\n";
+    std::cout << "File: " << file << std::endl;
+
     auto start_time = std::chrono::high_resolution_clock::now();
-    ThreadPool t_pool(4);  
+    ThreadPool t_pool(num_threads);  
 
     int fd = open(file, O_RDONLY);
     if (fd == -1) {
@@ -79,7 +131,7 @@ int main(int argc, char* argv[]) {
 
     size_t offset = 0;
     while (offset < (size_t)sb.st_size) {
-        size_t chunk_end = std::min(offset + CHUNK_SIZE, (size_t)sb.st_size);
+        size_t chunk_end = std::min(offset + chunk_size_mb, (size_t)sb.st_size);
         
         while (chunk_end < (size_t)sb.st_size && data[chunk_end] != '\n') {
             chunk_end++;
