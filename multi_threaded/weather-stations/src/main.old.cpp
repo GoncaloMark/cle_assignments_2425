@@ -13,39 +13,6 @@
 #include "threading.hpp"
 #include "datastructures.hpp"
 
-// Fazer o sort no work atual tipo processar o ficheiro e fazer o sort ao mesmo tempo ou fazer job separado e no fim de processar o ficheiro publicar sorting jobs?
-
-thread_local std::map<std::string, data_t> local_store;
-
-void process_chunk(const char* start, const char* end) {
-    const char* ptr = start;
-    while (ptr < end) {
-        const char* line_end = static_cast<const char*>(std::memchr(ptr, '\n', end - ptr));
-        if (!line_end) break;
-
-        const char* semicolon = static_cast<const char*>(std::memchr(ptr, ';', line_end - ptr));
-        if (!semicolon) {
-            std::cerr << "Skipping malformed line (missing ';'): " << std::string(ptr, line_end - ptr) << '\n';
-        } else {
-            try {
-                //TODO String view evitar copy
-                std::string key(ptr, semicolon - ptr);
-                float value = std::stof(std::string(semicolon + 1, line_end - (semicolon + 1)));
-
-                auto& data = local_store[key];
-                data.sum += value;
-                data.count += 1;
-                data.max = std::max(data.max, value);
-                data.min = std::min(data.min, value);
-
-            } catch (const std::exception& e) {
-                std::cerr << "Skipping invalid line: " << std::string(ptr, line_end - ptr) << '\n';
-            }
-        }
-        ptr = line_end + 1;  // go next line
-    }
-}
-
 static option long_options[] = {
     {"file", required_argument, 0, 'f'},
     {"chunk_size", required_argument, 0, 'z'},
@@ -100,12 +67,12 @@ int main(int argc, char* argv[]) {
     }
 
     size_t chunk_size_b = chunk_size * (1024 * 1024);
-    std::cout << "Chunk size: " << chunk_size_b << '\n';
-    std::cout << "Number of Threads: " << num_threads << '\n';
-    std::cout << "File: " << file << '\n';
+    std::cout << "Chunk size: " << chunk_size_b << "\n";
+    std::cout << "Number of Threads: " << num_threads << "\n";
+    std::cout << "File: " << file << "\n";
 
-    auto start_time = std::chrono::high_resolution_clock::now();  
-    ThreadPool t_pool(num_threads);
+    auto start_time = std::chrono::high_resolution_clock::now();
+    ThreadPool t_pool(num_threads);  
 
     int fd = open(file, O_RDONLY);
     if (fd == -1) {
@@ -129,8 +96,8 @@ int main(int argc, char* argv[]) {
 
     madvise(data, sb.st_size, MADV_SEQUENTIAL);
 
-    std::vector<std::map<std::string, data_t>> thread_stores;
-    std::mutex mergeTex; 
+    std::map<std::string, data_t> store;
+    std::mutex storeTex; 
 
     size_t offset = 0;
     while (offset < (size_t)sb.st_size) {
@@ -142,31 +109,41 @@ int main(int argc, char* argv[]) {
 
         madvise(data + offset, chunk_end - offset, MADV_WILLNEED);
 
-        t_pool.addTask([=, &thread_stores, &mergeTex] {
-            local_store.clear();
-            process_chunk(data + offset, data + chunk_end);
-            madvise(data + offset, chunk_end - offset, MADV_DONTNEED);
+        t_pool.addTask([=, &store, &storeTex] {
+            const char* ptr = data + offset;
+            while (ptr < (data + chunk_end)) {
+                const char* line_end = static_cast<const char*>(std::memchr(ptr, '\n', (data + chunk_end) - ptr));
+                if (!line_end) break;
 
-            std::lock_guard<std::mutex> lock(mergeTex);
-            thread_stores.push_back(std::move(local_store));
+                const char* semicolon = static_cast<const char*>(std::memchr(ptr, ';', line_end - ptr));
+                if (!semicolon) {
+                    std::cerr << "Skipping malformed line (missing ';'): " << std::string(ptr, line_end - ptr) << '\n';
+                } else {
+                    try {
+                        std::string key(ptr, semicolon - ptr);
+                        float value = std::stof(std::string(semicolon + 1, line_end - (semicolon + 1)));
+
+                        {
+                            std::lock_guard<std::mutex> lock(storeTex);
+                            auto& data = store[key];
+                            data.sum += value;
+                            data.count += 1;
+                            data.max = std::max(data.max, value);
+                            data.min = std::min(data.min, value);
+                        }
+                    } catch (const std::exception& e) {
+                        std::cerr << "Skipping invalid line: " << std::string(ptr, line_end - ptr) << '\n';
+                    }
+                }
+                ptr = line_end + 1;  // go next line
+            }
+            madvise(data + offset, chunk_end - offset, MADV_DONTNEED);
         });
 
         offset = chunk_end + 1;
     }
 
     t_pool.waitFinished();  
-
-    std::map<std::string, data_t> store;
-    for (const auto& local_map : thread_stores) {
-        for (const auto& [key, data] : local_map) {
-            auto& global_data = store[key];
-
-            global_data.sum += data.sum;
-            global_data.count += data.count;
-            global_data.max = std::max(global_data.max, data.max);
-            global_data.min = std::min(global_data.min, data.min);
-        }
-    }
 
     for (const auto& entry : store) {
         std::cout << std::fixed << std::setprecision(1) << entry.first << ": avg=" << entry.second.sum / entry.second.count << " min=" << entry.second.min << " max=" << entry.second.max << '\n';
@@ -175,6 +152,13 @@ int main(int argc, char* argv[]) {
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time);
     std::cout << "Execution time: " << duration.count() << " milliseconds" << std::endl;
+
+    t_pool.addTask([=, &store, &storeTex] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5000));
+        std::cout << "after job" << std::endl;
+    });
+
+    t_pool.waitFinished();  
 
     munmap(data, sb.st_size);
     close(fd);
