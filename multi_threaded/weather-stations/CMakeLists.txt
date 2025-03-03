@@ -6,6 +6,8 @@ add_executable(cle-ws-mt
     # Add your files here if needed.
 )
 
+target_include_directories(cle-ws-mt PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+
 target_link_libraries(cle-ws-mt PRIVATE multithreaded)
 
 target_compile_features(cle-ws-mt PRIVATE cxx_std_20)

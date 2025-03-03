@@ -16,13 +16,13 @@ class ThreadPool{
                 threads.emplace_back([this] {
                     while (true) {
                         std::function<void()> task;
-                        // open a scope so queue is unlocked before executing the task
+                        // open a scope for unique_lock
                         {
                             // lock queue
                             std::unique_lock<std::mutex> lock(poolTex);
     
                             // wait for task to be put in queue
-                            cond.wait(lock, [this] {
+                            cond_work.wait(lock, [this] {
                                 return !taskQueue.isEmpty() || exit;
                             });
     
@@ -32,17 +32,39 @@ class ThreadPool{
                             }
                             
                             task = std::move(taskQueue.deQueue());
+                            busy++;
+
+                            // Unlock to execute task
+                            lock.unlock();
+
+                            task();
+
+                            // Lock to notify end of job
+                            lock.lock();
+                            busy--;
+                            cond_finished.notify_one();
                         }
-                        
-                        task();
                     }
                 });
             }
         };
 
+        ~ThreadPool(){
+            {
+                std::unique_lock<std::mutex> lock(poolTex);
+                exit = true;
+            }
+        
+            cond_work.notify_all();
+        
+            for (auto& thread : threads) {
+                thread.join();
+            }
+        }
+
         void addTask(std::function<void()> task);
 
-        void stop();
+        void waitFinished();
 
     private:
         // sinal para distinguir entre esperar pelo trabalho ou parar.
@@ -52,7 +74,8 @@ class ThreadPool{
         Queue<std::function<void()>> taskQueue;
 
         mutable std::mutex poolTex;
-        mutable std::condition_variable cond;
+        mutable std::condition_variable cond_work;
 
-        // é preciso notificar que o job está terminado para dar exit.
+        unsigned int busy = 0;
+        mutable std::condition_variable cond_finished;
 };
